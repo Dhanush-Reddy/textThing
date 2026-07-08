@@ -1,0 +1,8 @@
+[build]
+  publish = "client"
+
+# Example redirect to prevent 404s if client-side routing is introduced
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

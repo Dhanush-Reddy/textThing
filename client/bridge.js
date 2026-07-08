@@ -8,7 +8,11 @@
 //
 // The room id is your "/Dh" — read it however you already do (path or ?room=).
 
-const RELAY_URL = "https://YOUR-APP.onrender.com"; // <-- your Render URL goes here
+const RELAY_URL = window.RELAY_URL || 
+                  localStorage.getItem("RELAY_URL") || 
+                  "https://textthing.onrender.com"; // your Render URL
+
+
 
 export function connectBridge(roomId, handlers = {}) {
   // `io` is the global from the socket.io CDN script

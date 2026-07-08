@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Text Bridge — Secure Chunk Relay</title>
+  <!-- SEO & Social Meta -->
+  <meta name="description" content="A premium Socket.IO relay for fast, secure file-to-text chunk transfer. Works across strict firewalls and blocks without WebRTC.">
+  
+  <link rel="stylesheet" href="/style.css">
+  
+  <!-- Socket.IO Client CDN -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24">
+          <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>Text Bridge</h1>
+        <p>Reliable File & Text Relay</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div id="room-badge" class="room-badge disconnected">
+        <div class="dot"></div>
+        <span id="room-status-text">Connecting...</span>
+      </div>
+      <button class="server-config-btn" id="config-btn" title="Relay Server URL">
+        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Server Config Drawer -->
+  <div class="config-panel" id="config-panel">
+    <h3>Relay Configuration</h3>
+    <p style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.75rem;">
+      Set your backend Socket.IO relay URL. Defaults to localhost or deployment URL.
+    </p>
+    <label style="font-size: 0.75rem; color: var(--text-secondary); display: block; margin-bottom: 0.25rem;">Relay Server URL</label>
+    <input type="text" id="relay-url-input" placeholder="http://localhost:3000">
+    <button id="save-config-btn">Save & Reconnect</button>
+  </div>
+
+  <main>
+    <!-- Info banner containing room sharing link -->
+    <div class="info-banner">
+      <div class="info-content">
+        <div class="info-icon">
+          <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+        </div>
+        <div class="info-text">
+          <h4 id="room-banner-title">Room: ...</h4>
+          <p>Open this URL on the receiving device to stream your file directly.</p>
+        </div>
+      </div>
+      <button class="share-btn" id="share-room-btn">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        Copy Link
+      </button>
+    </div>
+
+    <!-- Tab selection -->
+    <div class="tabs-container">
+      <button class="tab-btn active" data-tab="encode-tab">Encode & Send</button>
+      <button class="tab-btn" data-tab="decode-tab">Receive & Decode</button>
+    </div>
+
+    <!-- Tab Panels -->
+    <!-- ENCODE PANEL -->
+    <section class="panel active" id="encode-tab">
+      <!-- File Selector Dropzone -->
+      <div class="dropzone" id="dropzone">
+        <div class="dropzone-icon">
+          <svg width="32" height="32" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+        </div>
+        <div class="dropzone-text">
+          <h3>Choose a file to transfer</h3>
+          <p>Drag and drop any file here, or click to browse</p>
+        </div>
+        <input type="file" id="file-input" class="file-input">
+      </div>
+
+      <!-- File Details Card (Visible only when file loaded) -->
+      <div class="file-card" id="file-card" style="display: none;">
+        <div class="file-info">
+          <div class="file-icon">
+            <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+            </svg>
+          </div>
+          <div class="file-details">
+            <h4 id="file-name">Document.pdf</h4>
+            <p id="file-size">4.2 MB • application/pdf</p>
+          </div>
+        </div>
+        <button class="remove-file-btn" id="remove-file-btn" title="Remove file">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Stream Status Box -->
+      <div class="transfer-status-box" id="send-status-box" style="display: none;">
+        <div class="progress-header">
+          <span id="send-progress-label">Encoding file...</span>
+          <span id="send-progress-pct">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="send-progress-bar"></div>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span>Chunks Sent</span>
+            <strong id="send-stat-chunks">0 / 0</strong>
+          </div>
+          <div class="stat-card">
+            <span>Transfer Speed</span>
+            <strong id="send-stat-speed">0 KB/s</strong>
+          </div>
+          <div class="stat-card">
+            <span>Status</span>
+            <strong id="send-stat-state" style="color: var(--accent-cyan);">Idle</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action Button -->
+      <button class="action-btn" id="send-btn" disabled>
+        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+        Start Stream Transfer
+      </button>
+    </section>
+
+    <!-- DECODE PANEL -->
+    <section class="panel" id="decode-tab">
+      <div class="empty-state" id="decode-empty-state">
+        <svg width="48" height="48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        <h3>Waiting for sender...</h3>
+        <p>No transfer in progress. Connect the sender device to room <strong id="room-placeholder">Dh</strong> and start sending.</p>
+      </div>
+
+      <div class="transfer-status-box" id="receive-status-box" style="display: none;">
+        <div class="file-card" style="margin-bottom: 1.5rem; background: rgba(0,0,0,0.1);">
+          <div class="file-info">
+            <div class="file-icon" style="color: var(--accent-cyan); background: rgba(6, 182, 212, 0.1);">
+              <svg width="24" height="24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+              </svg>
+            </div>
+            <div class="file-details">
+              <h4 id="receive-file-name">Incoming_File.zip</h4>
+              <p id="receive-file-size">Calculating...</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="progress-header">
+          <span id="receive-progress-label">Receiving chunks...</span>
+          <span id="receive-progress-pct">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="receive-progress-bar" style="background: linear-gradient(to right, var(--accent-cyan), var(--accent-emerald))"></div>
+        </div>
+
+        <div class="stats-grid" style="margin-bottom: 1.5rem;">
+          <div class="stat-card">
+            <span>Chunks Received</span>
+            <strong id="receive-stat-chunks">0 / 0</strong>
+          </div>
+          <div class="stat-card">
+            <span>Completeness</span>
+            <strong id="receive-stat-completeness">0%</strong>
+          </div>
+          <div class="stat-card">
+            <span>Status</span>
+            <strong id="receive-stat-state" style="color: var(--accent-cyan);">Idle</strong>
+          </div>
+        </div>
+
+        <!-- Chunk visualizer grid -->
+        <h4 style="font-size: 0.8rem; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 0.5rem; letter-spacing: 0.05em;">Chunk Stream Visualization</h4>
+        <div class="chunk-visualizer" id="chunk-visualizer"></div>
+      </div>
+
+      <button class="action-btn success" id="download-btn" style="display: none;" disabled>
+        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+          <polyline points="7 10 12 15 17 10"></polyline>
+          <line x1="12" y1="15" x2="12" y2="3"></line>
+        </svg>
+        Reassemble & Save File
+      </button>
+
+      <button class="action-btn secondary" id="reset-receive-btn" style="display: none; margin-top: 1rem;">
+        Clear Transfer & Reset
+      </button>
+    </section>
+  </main>
+
+  <div class="toast" id="toast">Link copied to clipboard!</div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
