@@ -15,8 +15,22 @@ const RELAY_URL = window.RELAY_URL ||
 
 
 export function connectBridge(roomId, handlers = {}) {
-  // `io` is the global from the socket.io CDN script
-  const socket = io(RELAY_URL, { transports: ["websocket"] });
+  // Safely resolve socket.io client global to prevent ReferenceErrors
+  const ioClient = (typeof window !== "undefined" && window.io) || (typeof io !== "undefined" ? io : null);
+  if (!ioClient) {
+    console.error("Socket.IO client library is not loaded. Ensure the local socket.io.min.js or CDN script is running.");
+    return {
+      socket: null,
+      startTransfer: () => {},
+      sendChunk: () => {},
+      finish: () => {},
+      reset: () => {},
+      requestResend: () => {},
+      disconnect: () => {}
+    };
+  }
+  const socket = ioClient(RELAY_URL, { transports: ["websocket"] });
+
 
   socket.on("connect", () => {
     socket.emit("join", roomId, (state) => {
