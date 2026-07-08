@@ -1,0 +1,16 @@
+{
+  "name": "textbridge-relay",
+  "version": "1.0.0",
+  "description": "Minimal Socket.IO relay for Text Bridge encode->decode chunk transfer (no WebRTC).",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

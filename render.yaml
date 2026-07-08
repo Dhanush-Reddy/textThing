@@ -1,0 +1,14 @@
+# Optional: lets Render auto-configure the service when you connect the repo.
+# You can also skip this file and set everything in the Render dashboard.
+services:
+  - type: web
+    name: textbridge-relay
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: CORS_ORIGIN
+        # Change to your Netlify site, e.g. https://your-textbridge.netlify.app
+        value: "*"
