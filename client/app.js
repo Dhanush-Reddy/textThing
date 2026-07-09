@@ -139,7 +139,9 @@ const handlers = {
   },
   onReset: () => {
     resetReceiver();
+    resetSender();
   },
+
   onResend: async (seqs) => {
     // Peer requested missing chunks — read dynamically from disk and stream them
     if (activeFile && isSending) {
@@ -564,7 +566,10 @@ downloadBtn.addEventListener("click", () => {
 
 resetReceiveBtn.addEventListener("click", () => {
   resetReceiver();
+  resetSender();
+  bridge.reset(); // Alert other peer to reset as well
 });
+
 
 function resetReceiver() {
   receivedChunks.clear();
