@@ -91,6 +91,8 @@ function formatBytes(bytes, decimals = 2) {
 // ---- Global State variables -------------------------------------------------
 let activeFile = null;
 let isSending = false;
+let lastAckedSeq = -1;
+
 
 // Receiver State
 const receivedChunks = new Map();
@@ -159,6 +161,9 @@ const handlers = {
   },
   onPeers: (peersCount) => {
     updatePeerBadge(peersCount);
+  },
+  onChunkAck: (payload) => {
+    lastAckedSeq = payload.seq;
   }
 };
 
@@ -264,6 +269,7 @@ sendBtn.addEventListener("click", async () => {
   if (!activeFile || isSending) return;
   
   isSending = true;
+  lastAckedSeq = -1; // Reset ack counter
   sendBtn.disabled = true;
   sendStatusBox.style.display = "block";
   sendStatState.textContent = "Streaming";
@@ -298,12 +304,23 @@ sendBtn.addEventListener("click", async () => {
         total: total,
         data: chunkData
       });
+      
+      // Wait for receiver to acknowledge receipt (Flow Control)
+      const ackWaitStart = Date.now();
+      while (lastAckedSeq < seq && isSending) {
+        if (Date.now() - ackWaitStart > 45000) { // 45s fail-safe timeout
+          console.warn("Acknowledgement timed out for chunk:", seq);
+          break;
+        }
+        await new Promise(r => setTimeout(r, 10));
+      }
     } catch (err) {
       console.error(err);
       showToast("Error streaming file: " + err.message);
       isSending = false;
       break;
     }
+
     
     // Update progress bars & UI statistics
     const progressPct = Math.round(((seq + 1) / total) * 100);
@@ -448,6 +465,11 @@ async function handleIncomingChunk(chunk) {
     receivedChunks.set(chunk.seq, chunk.data);
   }
   
+  // Emit acknowledgement back to sender (flow control)
+  if (bridge && bridge.socket) {
+    bridge.socket.emit("chunk-ack", { seq: chunk.seq });
+  }
+  
   // Color the chunk box in the visualization grid
   const dot = document.getElementById(`chunk-dot-${chunk.seq}`);
   if (dot) {
@@ -456,6 +478,7 @@ async function handleIncomingChunk(chunk) {
   
   updateReceiverProgress(receivedChunks.size, chunk.total);
 }
+
 
 function updateReceiverProgress(receivedCount, total) {
   const pct = Math.round((receivedCount / total) * 100);

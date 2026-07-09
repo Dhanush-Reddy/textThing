@@ -100,6 +100,13 @@ io.on("connection", (socket) => {
     // Relay the resend request directly to the sender client
     socket.to(roomId).emit("resend", seqs);
   });
+  // Relay chunk acknowledgements back to the sender
+  socket.on("chunk-ack", (payload) => {
+    const roomId = socket.data.roomId;
+    if (!roomId) return;
+    socket.to(roomId).emit("chunk-ack", payload);
+  });
+
 
 
   // clear a room to start a fresh transfer
