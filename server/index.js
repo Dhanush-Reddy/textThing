@@ -55,7 +55,7 @@ io.on("connection", (socket) => {
         peers: peerCount(roomId),
         meta: room.meta,
         total: room.total,
-        chunks: Array.from(room.chunks.values()),
+        chunks: [], // Do not cache chunks in server memory (avoids Out of Memory crashes)
       });
     }
     socket.to(roomId).emit("peer-joined", { peers: peerCount(roomId) });
@@ -78,7 +78,7 @@ io.on("connection", (socket) => {
     const roomId = socket.data.roomId;
     if (!roomId || !chunk) return;
     const room = getRoom(roomId);
-    room.chunks.set(chunk.seq, chunk);
+    // Do not buffer chunks in server memory to ensure constant flat RAM usage.
     room.updatedAt = Date.now();
     socket.to(roomId).emit("chunk", chunk);
   });
@@ -91,18 +91,15 @@ io.on("connection", (socket) => {
     socket.to(roomId).emit("done", payload);
   });
 
-  // DECODE side asks for missing chunks by seq — served from the buffer,
-  // and also forwarded to the encoder in case the buffer was cleared.
+  // DECODE side asks for missing chunks by seq — forwarded directly
+  // to the encoder in case the buffer was cleared.
   socket.on("resend", (seqs) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    const room = getRoom(roomId);
-    (seqs || [])
-      .map((s) => room.chunks.get(s))
-      .filter(Boolean)
-      .forEach((c) => socket.emit("chunk", c));
+    // Relay the resend request directly to the sender client
     socket.to(roomId).emit("resend", seqs);
   });
+
 
   // clear a room to start a fresh transfer
   socket.on("reset", () => {

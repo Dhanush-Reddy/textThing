@@ -90,13 +90,41 @@ function formatBytes(bytes, decimals = 2) {
 
 // ---- Global State variables -------------------------------------------------
 let activeFile = null;
-let activeEncodedData = "";
 let isSending = false;
 
 // Receiver State
 const receivedChunks = new Map();
 let incomingMeta = null;
 let downloadBlobUrl = null;
+
+// Streaming States
+let fileWritableStream = null;
+let fileHandle = null;
+let useStreaming = false;
+
+// Helper function to read a slice of a file and convert to Base64
+function readSliceAsBase64(file, start, end, isFirstChunk) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const arrayBuffer = e.target.result;
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = "";
+      // Loop over buffer bytes (extremely fast for 32KB slices)
+      for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      let base64 = btoa(binary);
+      // Prepend MIME/Base64 scheme only for the first chunk to match original DataURL format
+      if (isFirstChunk) {
+        base64 = `data:${file.type || 'application/octet-stream'};base64,` + base64;
+      }
+      resolve(base64);
+    };
+    reader.onerror = (err) => reject(err);
+    reader.readAsArrayBuffer(file.slice(start, end));
+  });
+}
 
 // ---- Initialize Socket.IO Bridge -------------------------------------------
 const handlers = {
@@ -124,15 +152,23 @@ const handlers = {
   onReset: () => {
     resetReceiver();
   },
-  onResend: (seqs) => {
-    // If we are the sender and have the encoded data, resend those specific chunks
-    if (activeEncodedData && isSending) {
+  onResend: async (seqs) => {
+    // Peer requested missing chunks — read dynamically from disk and stream them
+    if (activeFile && isSending) {
       console.log("Resending chunks requested by peer:", seqs);
       const CHUNK_SIZE = 32 * 1024;
-      seqs.forEach(seq => {
-        const data = activeEncodedData.slice(seq * CHUNK_SIZE, (seq + 1) * CHUNK_SIZE);
-        bridge.sendChunk({ seq, total: Math.ceil(activeEncodedData.length / CHUNK_SIZE), data });
-      });
+      const total = Math.ceil(activeFile.size / CHUNK_SIZE);
+      
+      for (const seq of seqs) {
+        const start = seq * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, activeFile.size);
+        try {
+          const data = await readSliceAsBase64(activeFile, start, end, seq === 0);
+          bridge.sendChunk({ seq, total, data });
+        } catch (e) {
+          console.error("Failed to resend chunk:", seq, e);
+        }
+      }
     }
   },
   onPeers: (peersCount) => {
@@ -210,23 +246,11 @@ function handleFileSelect(file) {
   dropzone.style.display = "none";
   fileCard.style.display = "flex";
   
-  // Prepare encoding
-  sendBtn.disabled = true;
-  sendBtn.textContent = "Encoding File...";
-  
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    activeEncodedData = e.target.result;
-    sendBtn.disabled = false;
-    sendBtn.textContent = "Start Stream Transfer";
-    sendStatState.textContent = "Ready";
-    sendStatState.style.color = "var(--accent-emerald)";
-  };
-  reader.onerror = () => {
-    showToast("Error reading file.");
-    resetSender();
-  };
-  reader.readAsDataURL(file);
+  // Prepare encoding dynamically (no upfront file load into RAM)
+  sendBtn.disabled = false;
+  sendBtn.textContent = "Start Stream Transfer";
+  sendStatState.textContent = "Ready";
+  sendStatState.style.color = "var(--accent-emerald)";
 }
 
 removeFileBtn.addEventListener("click", () => {
@@ -236,7 +260,6 @@ removeFileBtn.addEventListener("click", () => {
 
 function resetSender() {
   activeFile = null;
-  activeEncodedData = "";
   isSending = false;
   
   dropzone.style.display = "flex";
@@ -252,7 +275,7 @@ function resetSender() {
 
 // Transfer execution
 sendBtn.addEventListener("click", async () => {
-  if (!activeEncodedData || isSending) return;
+  if (!activeFile || isSending) return;
   
   isSending = true;
   sendBtn.disabled = true;
@@ -261,7 +284,7 @@ sendBtn.addEventListener("click", async () => {
   sendStatState.style.color = "var(--primary)";
   
   const CHUNK_SIZE = 32 * 1024; // 32KB
-  const total = Math.ceil(activeEncodedData.length / CHUNK_SIZE);
+  const total = Math.ceil(activeFile.size / CHUNK_SIZE);
   
   // Announce transfer metadata
   bridge.startTransfer({
@@ -278,12 +301,23 @@ sendBtn.addEventListener("click", async () => {
   for (let seq = 0; seq < total; seq++) {
     if (!isSending) break; // Cancelled
     
-    const slice = activeEncodedData.slice(seq * CHUNK_SIZE, (seq + 1) * CHUNK_SIZE);
-    bridge.sendChunk({
-      seq: seq,
-      total: total,
-      data: slice
-    });
+    const start = seq * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, activeFile.size);
+    
+    try {
+      // Read only this chunk into RAM and stream it
+      const chunkData = await readSliceAsBase64(activeFile, start, end, seq === 0);
+      bridge.sendChunk({
+        seq: seq,
+        total: total,
+        data: chunkData
+      });
+    } catch (err) {
+      console.error(err);
+      showToast("Error streaming file: " + err.message);
+      isSending = false;
+      break;
+    }
     
     // Update progress bars & UI statistics
     const progressPct = Math.round(((seq + 1) / total) * 100);
@@ -325,12 +359,17 @@ const receiveStatChunks = document.getElementById("receive-stat-chunks");
 const receiveStatCompleteness = document.getElementById("receive-stat-completeness");
 const receiveStatState = document.getElementById("receive-stat-state");
 const chunkVisualizer = document.getElementById("chunk-visualizer");
+const acceptBtn = document.getElementById("accept-btn");
 const downloadBtn = document.getElementById("download-btn");
 const resetReceiveBtn = document.getElementById("reset-receive-btn");
 
 function handleIncomingMeta(meta) {
   incomingMeta = meta;
   receivedChunks.clear();
+  useStreaming = false;
+  fileWritableStream = null;
+  fileHandle = null;
+
   if (downloadBlobUrl) {
     URL.revokeObjectURL(downloadBlobUrl);
     downloadBlobUrl = null;
@@ -343,9 +382,20 @@ function handleIncomingMeta(meta) {
   
   receiveFileName.textContent = meta.fileName;
   receiveFileSize.textContent = `${formatBytes(meta.size)} • ${meta.mime || 'unknown type'}`;
-  receiveStatState.textContent = "Streaming";
+  receiveStatState.textContent = "Awaiting Save Location";
   receiveStatState.style.color = "var(--accent-cyan)";
-  receiveProgressLabel.textContent = "Receiving stream data...";
+  receiveProgressLabel.textContent = "Please select save location to stream directly to disk...";
+  
+  // Toggle UI based on File System Access API support
+  if ('showSaveFilePicker' in window) {
+    acceptBtn.style.display = "flex";
+    downloadBtn.style.display = "none";
+  } else {
+    // Fallback mode for Safari / Firefox (In-Memory Compilation)
+    acceptBtn.style.display = "none";
+    receiveStatState.textContent = "Streaming (In-Memory)";
+    receiveProgressLabel.textContent = "Receiving stream data (browser RAM)...";
+  }
   
   // Render clean dots grid
   chunkVisualizer.innerHTML = "";
@@ -359,10 +409,69 @@ function handleIncomingMeta(meta) {
   updateReceiverProgress(0, meta.total);
 }
 
-function handleIncomingChunk(chunk) {
+// User clicked accept — trigger safe File Picker gesture
+acceptBtn.addEventListener("click", async () => {
+  if (!incomingMeta) return;
+  try {
+    fileHandle = await window.showSaveFilePicker({
+      suggestedName: incomingMeta.fileName
+    });
+    fileWritableStream = await fileHandle.createWritable();
+    useStreaming = true;
+    acceptBtn.style.display = "none";
+    
+    receiveStatState.textContent = "Streaming (Disk)";
+    receiveProgressLabel.textContent = "Writing chunks directly to disk...";
+    
+    // Write any chunks that buffered before picker selection
+    for (const [seq, data] of receivedChunks.entries()) {
+      await writeChunkToDisk(seq, data);
+      // Clean memory
+      receivedChunks.set(seq, true);
+    }
+  } catch (err) {
+    console.error("Save picker canceled or failed", err);
+    showToast("Disk stream canceled. Falling back to memory compilation.");
+    useStreaming = false;
+    acceptBtn.style.display = "none";
+    receiveStatState.textContent = "Streaming (In-Memory)";
+    receiveProgressLabel.textContent = "Receiving stream data (browser RAM)...";
+  }
+});
+
+// Write bytes directly to disk at correct offset
+async function writeChunkToDisk(seq, data) {
+  if (!fileWritableStream) return;
+  const CHUNK_SIZE = 32 * 1024;
+  
+  let base64Data = data;
+  const splitIndex = data.indexOf(",");
+  if (splitIndex !== -1) {
+    base64Data = data.slice(splitIndex + 1);
+  }
+  
+  const binaryString = atob(base64Data);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  
+  await fileWritableStream.write({
+    type: "write",
+    position: seq * CHUNK_SIZE,
+    data: bytes
+  });
+}
+
+async function handleIncomingChunk(chunk) {
   if (!incomingMeta) return;
   
-  receivedChunks.set(chunk.seq, chunk.data);
+  if (useStreaming) {
+    await writeChunkToDisk(chunk.seq, chunk.data);
+    receivedChunks.set(chunk.seq, true); // Keep only sequence index (saves gigabytes of RAM)
+  } else {
+    receivedChunks.set(chunk.seq, chunk.data);
+  }
   
   // Color the chunk box in the visualization grid
   const dot = document.getElementById(`chunk-dot-${chunk.seq}`);
@@ -381,7 +490,7 @@ function updateReceiverProgress(receivedCount, total) {
   receiveStatCompleteness.textContent = `${pct}%`;
 }
 
-function checkCompleteness(totalCount) {
+async function checkCompleteness(totalCount) {
   const total = totalCount || incomingMeta?.total || 0;
   if (!total) return;
   
@@ -400,14 +509,29 @@ function checkCompleteness(totalCount) {
     receiveProgressLabel.textContent = `Missing ${missing.length} chunks. Requesting resend...`;
     bridge.requestResend(missing);
   } else {
-    // Reassembly
-    receiveStatState.textContent = "Complete";
-    receiveStatState.style.color = "var(--accent-emerald)";
-    receiveProgressLabel.textContent = "Stream received fully! Ready to compile.";
-    
-    // Enable download
-    downloadBtn.style.display = "flex";
-    downloadBtn.disabled = false;
+    // Stream assembly complete
+    if (useStreaming && fileWritableStream) {
+      receiveStatState.textContent = "Complete";
+      receiveStatState.style.color = "var(--accent-emerald)";
+      receiveProgressLabel.textContent = "Stream received fully and saved directly to disk!";
+      
+      try {
+        await fileWritableStream.close();
+        fileWritableStream = null;
+        showToast("File saved directly to disk successfully!");
+      } catch (err) {
+        console.error("Error closing writable stream", err);
+        showToast("Error finishing file write.");
+      }
+    } else {
+      receiveStatState.textContent = "Complete";
+      receiveStatState.style.color = "var(--accent-emerald)";
+      receiveProgressLabel.textContent = "Stream received fully! Ready to compile.";
+      
+      // Enable download
+      downloadBtn.style.display = "flex";
+      downloadBtn.disabled = false;
+    }
   }
 }
 
@@ -462,6 +586,14 @@ resetReceiveBtn.addEventListener("click", () => {
 function resetReceiver() {
   receivedChunks.clear();
   incomingMeta = null;
+  useStreaming = false;
+  
+  if (fileWritableStream) {
+    fileWritableStream.close().catch(() => {});
+    fileWritableStream = null;
+  }
+  fileHandle = null;
+
   if (downloadBlobUrl) {
     URL.revokeObjectURL(downloadBlobUrl);
     downloadBlobUrl = null;
@@ -470,6 +602,7 @@ function resetReceiver() {
   decodeEmptyState.style.display = "flex";
   receiveStatusBox.style.display = "none";
   downloadBtn.style.display = "none";
+  acceptBtn.style.display = "none";
   resetReceiveBtn.style.display = "none";
   
   chunkVisualizer.innerHTML = "";
