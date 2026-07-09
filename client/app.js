@@ -102,25 +102,11 @@ let fileWritableStream = null;
 let fileHandle = null;
 let useStreaming = false;
 
-// Helper function to read a slice of a file and convert to Base64
-function readSliceAsBase64(file, start, end, isFirstChunk) {
+// Helper function to read a slice of a file as a raw ArrayBuffer
+function readSliceAsArrayBuffer(file, start, end) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const arrayBuffer = e.target.result;
-      const bytes = new Uint8Array(arrayBuffer);
-      let binary = "";
-      // Loop over buffer bytes (extremely fast for 32KB slices)
-      for (let i = 0; i < bytes.byteLength; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      let base64 = btoa(binary);
-      // Prepend MIME/Base64 scheme only for the first chunk to match original DataURL format
-      if (isFirstChunk) {
-        base64 = `data:${file.type || 'application/octet-stream'};base64,` + base64;
-      }
-      resolve(base64);
-    };
+    reader.onload = (e) => resolve(e.target.result);
     reader.onerror = (err) => reject(err);
     reader.readAsArrayBuffer(file.slice(start, end));
   });
@@ -156,14 +142,14 @@ const handlers = {
     // Peer requested missing chunks — read dynamically from disk and stream them
     if (activeFile && isSending) {
       console.log("Resending chunks requested by peer:", seqs);
-      const CHUNK_SIZE = 32 * 1024;
+      const CHUNK_SIZE = 1024 * 1024; // 1 MB
       const total = Math.ceil(activeFile.size / CHUNK_SIZE);
       
       for (const seq of seqs) {
         const start = seq * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, activeFile.size);
         try {
-          const data = await readSliceAsBase64(activeFile, start, end, seq === 0);
+          const data = await readSliceAsArrayBuffer(activeFile, start, end);
           bridge.sendChunk({ seq, total, data });
         } catch (e) {
           console.error("Failed to resend chunk:", seq, e);
@@ -283,7 +269,7 @@ sendBtn.addEventListener("click", async () => {
   sendStatState.textContent = "Streaming";
   sendStatState.style.color = "var(--primary)";
   
-  const CHUNK_SIZE = 32 * 1024; // 32KB
+  const CHUNK_SIZE = 1024 * 1024; // 1 MB Chunks (extremely fast network performance)
   const total = Math.ceil(activeFile.size / CHUNK_SIZE);
   
   // Announce transfer metadata
@@ -305,8 +291,8 @@ sendBtn.addEventListener("click", async () => {
     const end = Math.min(start + CHUNK_SIZE, activeFile.size);
     
     try {
-      // Read only this chunk into RAM and stream it
-      const chunkData = await readSliceAsBase64(activeFile, start, end, seq === 0);
+      // Read raw binary ArrayBuffer slice and stream it
+      const chunkData = await readSliceAsArrayBuffer(activeFile, start, end);
       bridge.sendChunk({
         seq: seq,
         total: total,
@@ -331,8 +317,8 @@ sendBtn.addEventListener("click", async () => {
     const speedKbps = elapsedSecs > 0 ? (sentBytes / 1024) / elapsedSecs : 0;
     sendStatSpeed.textContent = `${speedKbps.toFixed(1)} KB/s`;
     
-    // Tiny delay to pace socket transmission and avoid browser thread locks
-    await new Promise(resolve => setTimeout(resolve, 5));
+    // Tiny yield delay for browser render tick
+    await new Promise(resolve => setTimeout(resolve, 2));
   }
   
   if (isSending) {
@@ -442,24 +428,13 @@ acceptBtn.addEventListener("click", async () => {
 // Write bytes directly to disk at correct offset
 async function writeChunkToDisk(seq, data) {
   if (!fileWritableStream) return;
-  const CHUNK_SIZE = 32 * 1024;
+  const CHUNK_SIZE = 1024 * 1024; // 1 MB
   
-  let base64Data = data;
-  const splitIndex = data.indexOf(",");
-  if (splitIndex !== -1) {
-    base64Data = data.slice(splitIndex + 1);
-  }
-  
-  const binaryString = atob(base64Data);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  
+  // data is now a raw binary ArrayBuffer / Uint8Array!
   await fileWritableStream.write({
     type: "write",
     position: seq * CHUNK_SIZE,
-    data: bytes
+    data: data
   });
 }
 
@@ -539,29 +514,14 @@ downloadBtn.addEventListener("click", () => {
   if (!incomingMeta) return;
   
   try {
-    // Reassemble slices
+    // Reassemble raw ArrayBuffer slices
     const total = incomingMeta.total;
-    const fullDataUrlArr = [];
+    const chunksArray = [];
     for (let i = 0; i < total; i++) {
-      fullDataUrlArr.push(receivedChunks.get(i));
+      chunksArray.push(receivedChunks.get(i));
     }
-    const fullDataUrl = fullDataUrlArr.join("");
     
-    // Parse base64 from DataURL
-    const splitIndex = fullDataUrl.indexOf(",");
-    if (splitIndex === -1) throw new Error("Invalid Data URL stream");
-    
-    const base64Data = fullDataUrl.slice(splitIndex + 1);
-    
-    // Convert to Binary Array
-    const byteCharacters = atob(base64Data);
-    const byteNumbers = new Array(byteCharacters.length);
-    for (let i = 0; i < byteCharacters.length; i++) {
-      byteNumbers[i] = byteCharacters.charCodeAt(i);
-    }
-    const byteArray = new Uint8Array(byteNumbers);
-    const blob = new Blob([byteArray], { type: incomingMeta.mime });
-    
+    const blob = new Blob(chunksArray, { type: incomingMeta.mime });
     downloadBlobUrl = URL.createObjectURL(blob);
     
     // Create temporary link and download
