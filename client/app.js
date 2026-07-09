@@ -142,7 +142,7 @@ const handlers = {
     // Peer requested missing chunks — read dynamically from disk and stream them
     if (activeFile && isSending) {
       console.log("Resending chunks requested by peer:", seqs);
-      const CHUNK_SIZE = 1024 * 1024; // 1 MB
+      const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
       const total = Math.ceil(activeFile.size / CHUNK_SIZE);
       
       for (const seq of seqs) {
@@ -269,7 +269,7 @@ sendBtn.addEventListener("click", async () => {
   sendStatState.textContent = "Streaming";
   sendStatState.style.color = "var(--primary)";
   
-  const CHUNK_SIZE = 1024 * 1024; // 1 MB Chunks (extremely fast network performance)
+  const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB Chunks
   const total = Math.ceil(activeFile.size / CHUNK_SIZE);
   
   // Announce transfer metadata
@@ -428,7 +428,7 @@ acceptBtn.addEventListener("click", async () => {
 // Write bytes directly to disk at correct offset
 async function writeChunkToDisk(seq, data) {
   if (!fileWritableStream) return;
-  const CHUNK_SIZE = 1024 * 1024; // 1 MB
+  const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
   
   // data is now a raw binary ArrayBuffer / Uint8Array!
   await fileWritableStream.write({

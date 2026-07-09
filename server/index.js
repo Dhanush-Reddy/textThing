@@ -16,8 +16,9 @@ const ORIGIN = process.env.CORS_ORIGIN || "*";
 
 const io = new Server(server, {
   cors: { origin: ORIGIN, methods: ["GET", "POST"] },
-  maxHttpBufferSize: 5e6, // 5 MB per message — plenty for a text chunk
+  maxHttpBufferSize: 25e6, // 25 MB per message (supports up to 20MB transmission chunks)
 });
+
 
 // health/landing routes (Render pings "/" and you can eyeball it in a browser)
 app.get("/", (_req, res) => res.send("Text Bridge relay is running."));
