@@ -91,18 +91,13 @@ function formatBytes(bytes, decimals = 2) {
 // ---- Global State variables -------------------------------------------------
 let activeFile = null;
 let isSending = false;
-let lastAckedSeq = -1;
-
 
 // Receiver State
 const receivedChunks = new Map();
 let incomingMeta = null;
 let downloadBlobUrl = null;
 
-// Streaming States
-let fileWritableStream = null;
-let fileHandle = null;
-let useStreaming = false;
+const CHUNK_SIZE = 1024 * 1024; // Stable 1 MB binary chunks
 
 // Helper function to read a slice of a file as a raw ArrayBuffer
 function readSliceAsArrayBuffer(file, start, end) {
@@ -141,12 +136,10 @@ const handlers = {
     resetReceiver();
     resetSender();
   },
-
   onResend: async (seqs) => {
     // Peer requested missing chunks — read dynamically from disk and stream them
     if (activeFile && isSending) {
       console.log("Resending chunks requested by peer:", seqs);
-      const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
       const total = Math.ceil(activeFile.size / CHUNK_SIZE);
       
       for (const seq of seqs) {
@@ -163,9 +156,6 @@ const handlers = {
   },
   onPeers: (peersCount) => {
     updatePeerBadge(peersCount);
-  },
-  onChunkAck: (payload) => {
-    lastAckedSeq = payload.seq;
   }
 };
 
@@ -271,13 +261,11 @@ sendBtn.addEventListener("click", async () => {
   if (!activeFile || isSending) return;
   
   isSending = true;
-  lastAckedSeq = -1; // Reset ack counter
   sendBtn.disabled = true;
   sendStatusBox.style.display = "block";
   sendStatState.textContent = "Streaming";
   sendStatState.style.color = "var(--primary)";
   
-  const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB Chunks
   const total = Math.ceil(activeFile.size / CHUNK_SIZE);
   
   // Announce transfer metadata
@@ -289,7 +277,6 @@ sendBtn.addEventListener("click", async () => {
   });
   
   sendStatChunks.textContent = `0 / ${total}`;
-  
   const startTime = Date.now();
   
   for (let seq = 0; seq < total; seq++) {
@@ -299,30 +286,19 @@ sendBtn.addEventListener("click", async () => {
     const end = Math.min(start + CHUNK_SIZE, activeFile.size);
     
     try {
-      // Read raw binary ArrayBuffer slice and stream it
+      // Read raw binary ArrayBuffer slice and stream it immediately
       const chunkData = await readSliceAsArrayBuffer(activeFile, start, end);
       bridge.sendChunk({
         seq: seq,
         total: total,
         data: chunkData
       });
-      
-      // Wait for receiver to acknowledge receipt (Flow Control)
-      const ackWaitStart = Date.now();
-      while (lastAckedSeq < seq && isSending) {
-        if (Date.now() - ackWaitStart > 45000) { // 45s fail-safe timeout
-          console.warn("Acknowledgement timed out for chunk:", seq);
-          break;
-        }
-        await new Promise(r => setTimeout(r, 10));
-      }
     } catch (err) {
       console.error(err);
       showToast("Error streaming file: " + err.message);
       isSending = false;
       break;
     }
-
     
     // Update progress bars & UI statistics
     const progressPct = Math.round(((seq + 1) / total) * 100);
@@ -336,8 +312,8 @@ sendBtn.addEventListener("click", async () => {
     const speedKbps = elapsedSecs > 0 ? (sentBytes / 1024) / elapsedSecs : 0;
     sendStatSpeed.textContent = `${speedKbps.toFixed(1)} KB/s`;
     
-    // Tiny yield delay for browser render tick
-    await new Promise(resolve => setTimeout(resolve, 2));
+    // Tiny delay to keep browser render loop alive
+    await new Promise(resolve => setTimeout(resolve, 3));
   }
   
   if (isSending) {
@@ -364,16 +340,12 @@ const receiveStatChunks = document.getElementById("receive-stat-chunks");
 const receiveStatCompleteness = document.getElementById("receive-stat-completeness");
 const receiveStatState = document.getElementById("receive-stat-state");
 const chunkVisualizer = document.getElementById("chunk-visualizer");
-const acceptBtn = document.getElementById("accept-btn");
 const downloadBtn = document.getElementById("download-btn");
 const resetReceiveBtn = document.getElementById("reset-receive-btn");
 
 function handleIncomingMeta(meta) {
   incomingMeta = meta;
   receivedChunks.clear();
-  useStreaming = false;
-  fileWritableStream = null;
-  fileHandle = null;
 
   if (downloadBlobUrl) {
     URL.revokeObjectURL(downloadBlobUrl);
@@ -387,20 +359,9 @@ function handleIncomingMeta(meta) {
   
   receiveFileName.textContent = meta.fileName;
   receiveFileSize.textContent = `${formatBytes(meta.size)} • ${meta.mime || 'unknown type'}`;
-  receiveStatState.textContent = "Awaiting Save Location";
+  receiveStatState.textContent = "Streaming";
   receiveStatState.style.color = "var(--accent-cyan)";
-  receiveProgressLabel.textContent = "Please select save location to stream directly to disk...";
-  
-  // Toggle UI based on File System Access API support
-  if ('showSaveFilePicker' in window) {
-    acceptBtn.style.display = "flex";
-    downloadBtn.style.display = "none";
-  } else {
-    // Fallback mode for Safari / Firefox (In-Memory Compilation)
-    acceptBtn.style.display = "none";
-    receiveStatState.textContent = "Streaming (In-Memory)";
-    receiveProgressLabel.textContent = "Receiving stream data (browser RAM)...";
-  }
+  receiveProgressLabel.textContent = "Receiving binary chunks...";
   
   // Render clean dots grid
   chunkVisualizer.innerHTML = "";
@@ -414,63 +375,10 @@ function handleIncomingMeta(meta) {
   updateReceiverProgress(0, meta.total);
 }
 
-// User clicked accept — trigger safe File Picker gesture
-acceptBtn.addEventListener("click", async () => {
-  if (!incomingMeta) return;
-  try {
-    fileHandle = await window.showSaveFilePicker({
-      suggestedName: incomingMeta.fileName
-    });
-    fileWritableStream = await fileHandle.createWritable();
-    useStreaming = true;
-    acceptBtn.style.display = "none";
-    
-    receiveStatState.textContent = "Streaming (Disk)";
-    receiveProgressLabel.textContent = "Writing chunks directly to disk...";
-    
-    // Write any chunks that buffered before picker selection
-    for (const [seq, data] of receivedChunks.entries()) {
-      await writeChunkToDisk(seq, data);
-      // Clean memory
-      receivedChunks.set(seq, true);
-    }
-  } catch (err) {
-    console.error("Save picker canceled or failed", err);
-    showToast("Disk stream canceled. Falling back to memory compilation.");
-    useStreaming = false;
-    acceptBtn.style.display = "none";
-    receiveStatState.textContent = "Streaming (In-Memory)";
-    receiveProgressLabel.textContent = "Receiving stream data (browser RAM)...";
-  }
-});
-
-// Write bytes directly to disk at correct offset
-async function writeChunkToDisk(seq, data) {
-  if (!fileWritableStream) return;
-  const CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB
-  
-  // data is now a raw binary ArrayBuffer / Uint8Array!
-  await fileWritableStream.write({
-    type: "write",
-    position: seq * CHUNK_SIZE,
-    data: data
-  });
-}
-
-async function handleIncomingChunk(chunk) {
+function handleIncomingChunk(chunk) {
   if (!incomingMeta) return;
   
-  if (useStreaming) {
-    await writeChunkToDisk(chunk.seq, chunk.data);
-    receivedChunks.set(chunk.seq, true); // Keep only sequence index (saves gigabytes of RAM)
-  } else {
-    receivedChunks.set(chunk.seq, chunk.data);
-  }
-  
-  // Emit acknowledgement back to sender (flow control)
-  if (bridge && bridge.socket) {
-    bridge.socket.emit("chunk-ack", { seq: chunk.seq });
-  }
+  receivedChunks.set(chunk.seq, chunk.data);
   
   // Color the chunk box in the visualization grid
   const dot = document.getElementById(`chunk-dot-${chunk.seq}`);
@@ -481,7 +389,6 @@ async function handleIncomingChunk(chunk) {
   updateReceiverProgress(receivedChunks.size, chunk.total);
 }
 
-
 function updateReceiverProgress(receivedCount, total) {
   const pct = Math.round((receivedCount / total) * 100);
   receiveProgressBar.style.width = `${pct}%`;
@@ -490,7 +397,7 @@ function updateReceiverProgress(receivedCount, total) {
   receiveStatCompleteness.textContent = `${pct}%`;
 }
 
-async function checkCompleteness(totalCount) {
+function checkCompleteness(totalCount) {
   const total = totalCount || incomingMeta?.total || 0;
   if (!total) return;
   
@@ -510,28 +417,13 @@ async function checkCompleteness(totalCount) {
     bridge.requestResend(missing);
   } else {
     // Stream assembly complete
-    if (useStreaming && fileWritableStream) {
-      receiveStatState.textContent = "Complete";
-      receiveStatState.style.color = "var(--accent-emerald)";
-      receiveProgressLabel.textContent = "Stream received fully and saved directly to disk!";
-      
-      try {
-        await fileWritableStream.close();
-        fileWritableStream = null;
-        showToast("File saved directly to disk successfully!");
-      } catch (err) {
-        console.error("Error closing writable stream", err);
-        showToast("Error finishing file write.");
-      }
-    } else {
-      receiveStatState.textContent = "Complete";
-      receiveStatState.style.color = "var(--accent-emerald)";
-      receiveProgressLabel.textContent = "Stream received fully! Ready to compile.";
-      
-      // Enable download
-      downloadBtn.style.display = "flex";
-      downloadBtn.disabled = false;
-    }
+    receiveStatState.textContent = "Complete";
+    receiveStatState.style.color = "var(--accent-emerald)";
+    receiveProgressLabel.textContent = "Stream received fully! Ready to save.";
+    
+    // Enable download
+    downloadBtn.style.display = "flex";
+    downloadBtn.disabled = false;
   }
 }
 
@@ -570,17 +462,9 @@ resetReceiveBtn.addEventListener("click", () => {
   bridge.reset(); // Alert other peer to reset as well
 });
 
-
 function resetReceiver() {
   receivedChunks.clear();
   incomingMeta = null;
-  useStreaming = false;
-  
-  if (fileWritableStream) {
-    fileWritableStream.close().catch(() => {});
-    fileWritableStream = null;
-  }
-  fileHandle = null;
 
   if (downloadBlobUrl) {
     URL.revokeObjectURL(downloadBlobUrl);
@@ -590,7 +474,6 @@ function resetReceiver() {
   decodeEmptyState.style.display = "flex";
   receiveStatusBox.style.display = "none";
   downloadBtn.style.display = "none";
-  acceptBtn.style.display = "none";
   resetReceiveBtn.style.display = "none";
   
   chunkVisualizer.innerHTML = "";

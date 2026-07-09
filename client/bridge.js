@@ -49,7 +49,6 @@ export function connectBridge(roomId, handlers = {}) {
   socket.on("resend", (seqs) => handlers.onResend && handlers.onResend(seqs));
   socket.on("peer-joined", (p) => handlers.onPeers && handlers.onPeers(p.peers));
   socket.on("peer-left", (p) => handlers.onPeers && handlers.onPeers(p.peers));
-  socket.on("chunk-ack", (p) => handlers.onChunkAck && handlers.onChunkAck(p));
 
 
   return {
